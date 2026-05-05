@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.tonyk.ytdownload-helper</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Volumes/CrucialX9/download-yt/.venv/bin/python</string>
+    <string>/Volumes/CrucialX9/download-yt/app.py</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Volumes/CrucialX9/download-yt</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PORT</key>
+    <string>5001</string>
+    <key>HOST</key>
+    <string>127.0.0.1</string>
+    <key>FFMPEG_LOCATION</key>
+    <string>/opt/homebrew/bin</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/tmp/com.tonyk.ytdownload-helper.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/tmp/com.tonyk.ytdownload-helper.err.log</string>
+</dict>
+</plist>

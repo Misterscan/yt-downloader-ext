@@ -1,0 +1,42 @@
+# Basic
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+*.DS_Store
+
+# Node.js
+node_modules/
+dist/
+build/
+
+# Visual Studio Code
+.vscode/
+
+# Python
+__pycache__/
+.pytest_cache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyi
+*.python-version
+*.pydevproject
+*.project
+*.sublime-project
+*.sublime-workspace
+*.so
+*.egg
+*.egg-info/
+*.manifest
+
+# Repo specific (add any additional patterns here)
+*.exe
+*.dll
+*.jpg
+*.mp4
+*.mp3
+*.wav
+*.m4a
+*.webm
