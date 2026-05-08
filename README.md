@@ -41,7 +41,7 @@ A high-performance **Chrome extension** and **Flask backend** suite designed for
 
 | Requirement      | Command to Install         |
 | :--------------- | :------------------------- |
-| **Python 3.14+** | `brew install python@3.14` |
+| **Python 3.9+**  | `brew install python@3.14` |
 | **FFmpeg 8.0**   | `brew install ffmpeg@8`    |
 
 ---
