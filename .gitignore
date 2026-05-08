@@ -1,0 +1,7 @@
+.DS_Store
+scripts/
+downloads/
+.vscode/settings.json
+dist
+build
+release
