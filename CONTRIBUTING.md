@@ -27,8 +27,8 @@ Thank you for taking the time to contribute! This document covers how to set up 
 
 ```bash
 # Create and activate a virtual environment
-python3 -m venv .venv
-source .venv/bin/activate
+python3 -m venv .venv   # Windows: python -m venv venv
+source .venv/bin/activate # .\venv\Scripts\Activate.ps1
 
 # Install dependencies
 pip install -r backend/requirements.txt
