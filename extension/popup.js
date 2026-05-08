@@ -76,6 +76,17 @@ function detectPlaylist(url) {
   return false;
 }
 
+// ── Health check ──
+async function checkBackend() {
+  try {
+    const res = await fetch(`${BACKEND_URL}/health`);
+    const data = await res.json();
+    return data.status === "ok";
+  } catch {
+    return false;
+  }
+}
+
 // ── Fetch video info ──
 async function fetchVideoInfo(url) {
   const statusEl = document.getElementById("status");
@@ -272,6 +283,7 @@ document.getElementById("playlistBtn").addEventListener("click", async () => {
         url: url,
         format: currentFormat,
         quality: quality,
+        artist: document.getElementById("artistInput").value,
       }),
     });
 

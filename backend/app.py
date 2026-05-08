@@ -21,6 +21,10 @@ def not_found(e):
 def internal_error(e):
     return jsonify({"error": f"Internal server error: {str(e)}"}), 500
 
+@app.route("/health")
+def health():
+    return {"status": "ok"}
+
 DOWNLOAD_DIR = "downloads"
 if not os.path.exists(DOWNLOAD_DIR):
     os.makedirs(DOWNLOAD_DIR)
@@ -30,17 +34,18 @@ playlist_jobs = {}
 
 
 def sanitize_title(title):
-    # Keep filenames simple and safe across platforms.
-    cleaned = re.sub(r"[^A-Za-z0-9 _.-]", "", title or "")
-    cleaned = re.sub(r"\s+", " ", cleaned).strip(" .")
-    return cleaned or "youtube_download"
+    # Strip only characters that are unsafe for filenames across platforms.
+    # Forbidden on Windows/macOS: / \ : * ? " < > |
+    cleaned = re.sub(r'[\\/:*?"<>|]', '', title or '')
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip(' .')
+    return cleaned or 'youtube_download'
 
 
 def next_available_base(base_name, directory=None):
     target_dir = directory or DOWNLOAD_DIR
     candidate = base_name
     counter = 1
-    while glob.glob(os.path.join(target_dir, f"{candidate}.*")):
+    while glob.glob(os.path.join(target_dir, f"{glob.escape(candidate)}.*")):
         counter += 1
         candidate = f"{base_name} ({counter})"
     return candidate
@@ -111,67 +116,82 @@ def build_ydl_opts(format_type, quality, output_tmpl, ffmpeg_location, noplaylis
 
 
 def embed_mp3_artwork(filename, file_base, info, ffmpeg_location, directory=None):
-    """Crop thumbnail to square and embed into MP3 as cover art."""
+    """Embed metadata and optional cover art into MP3."""
     target_dir = directory or DOWNLOAD_DIR
 
     thumb_files = []
     for ext in ['webp', 'jpg', 'jpeg', 'png']:
-        thumb_files.extend(glob.glob(os.path.join(target_dir, f"{file_base}.{ext}")))
+        thumb_files.extend(glob.glob(os.path.join(target_dir, f"{glob.escape(file_base)}.{ext}")))
 
-    if not thumb_files:
-        return
+    cropped_thumb_path = None
+    if thumb_files:
+        thumb_path = thumb_files[0]
+        cropped_thumb_path = os.path.join(target_dir, f"{file_base}_square.jpg")
 
-    thumb_path = thumb_files[0]
-    cropped_thumb_path = os.path.join(target_dir, f"{file_base}_square.jpg")
-
-    # 1. Crop to square
-    crop_cmd = [
-        'ffmpeg', '-y', '-i', thumb_path,
-        '-vf', "crop='min(iw,ih)':'min(iw,ih)'",
-        cropped_thumb_path
-    ]
-    if ffmpeg_location:
-        crop_cmd[0] = os.path.join(ffmpeg_location, 'ffmpeg')
-
-    crop_res = subprocess.run(crop_cmd, capture_output=True, text=True)
-    if crop_res.returncode != 0:
-        print(f"Crop failed: {crop_res.stderr}")
-
-    if os.path.exists(cropped_thumb_path):
-        # 2. Embed into MP3
-        temp_mp3 = os.path.join(target_dir, f"{file_base}_tagged.mp3")
-        embed_cmd = [
-            'ffmpeg', '-y', '-i', filename, '-i', cropped_thumb_path,
-            '-map', '0:0', '-map', '1:0', '-c', 'copy',
-            '-map_metadata', '0',
-            '-id3v2_version', '3',
-            '-metadata', f'title={info.get("title", "")}',
-            '-metadata', f'artist={info.get("artist", "")}',
-            '-metadata:s:v', 'title=Album cover',
-            '-metadata:s:v', 'comment=Cover (Front)',
-            temp_mp3
+        # 1. Crop to square
+        crop_cmd = [
+            'ffmpeg', '-y', '-i', thumb_path,
+            '-vf', "crop='min(iw,ih)':'min(iw,ih)'",
+            cropped_thumb_path
         ]
         if ffmpeg_location:
-            embed_cmd[0] = os.path.join(ffmpeg_location, 'ffmpeg')
+            crop_cmd[0] = os.path.join(ffmpeg_location, 'ffmpeg')
 
-        embed_res = subprocess.run(embed_cmd, capture_output=True, text=True)
-        if embed_res.returncode != 0:
-            print(f"Embed failed: {embed_res.stderr}")
+        crop_res = subprocess.run(crop_cmd, capture_output=True, text=True)
+        if crop_res.returncode != 0:
+            print(f"Crop failed: {crop_res.stderr}")
+            cropped_thumb_path = None
 
-        if os.path.exists(temp_mp3):
-            os.replace(temp_mp3, filename)
+    # 2. Embed Metadata (and Thumbnail if available)
+    temp_mp3 = os.path.join(target_dir, f"{file_base}_tagged.mp3")
+    
+    # If file doesn't exist, we can't embed
+    if not os.path.exists(filename):
+        return
 
-        try:
-            os.remove(cropped_thumb_path)
-        except Exception:
-            pass
+    embed_cmd = [
+        'ffmpeg', '-y', '-i', filename
+    ]
+
+    if cropped_thumb_path and os.path.exists(cropped_thumb_path):
+        embed_cmd.extend(['-i', cropped_thumb_path, '-map', '0:0', '-map', '1:0'])
+    else:
+        embed_cmd.extend(['-map', '0:0'])
+
+    embed_cmd.extend([
+        '-c', 'copy',
+        '-map_metadata', '0',
+        '-id3v2_version', '3',
+        '-metadata', f'title={info.get("title", "")}',
+        '-metadata', f'artist={info.get("artist", "")}'
+    ])
+
+    if cropped_thumb_path and os.path.exists(cropped_thumb_path):
+        embed_cmd.extend([
+            '-metadata:s:v', 'title=Album cover',
+            '-metadata:s:v', 'comment=Cover (Front)'
+        ])
+
+    embed_cmd.append(temp_mp3)
+
+    if ffmpeg_location:
+        embed_cmd[0] = os.path.join(ffmpeg_location, 'ffmpeg')
+
+    embed_res = subprocess.run(embed_cmd, capture_output=True, text=True)
+    if embed_res.returncode != 0:
+        print(f"Embed failed: {embed_res.stderr}")
+
+    if os.path.exists(temp_mp3):
+        os.replace(temp_mp3, filename)
+
+    if cropped_thumb_path:
+        try: os.remove(cropped_thumb_path)
+        except Exception: pass
 
     # Cleanup original thumbnails
     for thumb in thumb_files:
-        try:
-            os.remove(thumb)
-        except Exception:
-            pass
+        try: os.remove(thumb)
+        except Exception: pass
 
 
 # ──────────────────────────────────────────────
@@ -315,12 +335,12 @@ def download():
 
         # Check for the resulting file
         expected_ext = 'mp3' if format_type == 'mp3' else 'mp4'
-        files = glob.glob(os.path.join(DOWNLOAD_DIR, f"{file_base}.{expected_ext}"))
+        files = glob.glob(os.path.join(DOWNLOAD_DIR, f"{glob.escape(file_base)}.{expected_ext}"))
 
         # Fallback — if format is mp4, yt-dlp may produce mkv/webm
         if not files and format_type == 'mp4':
             for ext in ['mkv', 'webm', 'mp4']:
-                files = glob.glob(os.path.join(DOWNLOAD_DIR, f"{file_base}.{ext}"))
+                files = glob.glob(os.path.join(DOWNLOAD_DIR, f"{glob.escape(file_base)}.{ext}"))
                 if files:
                     break
 
@@ -342,7 +362,7 @@ def download():
                     os.remove(filename)
                     # Cleanup residual files if any (like leftover thumbnails)
                     # yt-dlp usually cleans them but just in case
-                    for residual in glob.glob(os.path.join(DOWNLOAD_DIR, f"{file_base}.*")):
+                    for residual in glob.glob(os.path.join(DOWNLOAD_DIR, f"{glob.escape(file_base)}.*")):
                          os.remove(residual)
                 except Exception:
                     pass
@@ -354,7 +374,7 @@ def download():
             )
         else:
             # Cleanup any residual files even on failure
-            for residual in glob.glob(os.path.join(DOWNLOAD_DIR, f"{file_base}.*")):
+            for residual in glob.glob(os.path.join(DOWNLOAD_DIR, f"{glob.escape(file_base)}.*")):
                 try: os.remove(residual)
                 except Exception: pass
             return jsonify({"error": "Download failed: File not produced"}), 500
@@ -362,7 +382,7 @@ def download():
     except Exception as e:
         print(f"Error during download: {str(e)}")
         # Cleanup
-        for residual in glob.glob(os.path.join(DOWNLOAD_DIR, f"{file_base}.*")):
+        for residual in glob.glob(os.path.join(DOWNLOAD_DIR, f"{glob.escape(file_base)}.*")):
             try: os.remove(residual)
             except Exception: pass
         return jsonify({"error": str(e)}), 500
@@ -379,6 +399,7 @@ def playlist_start():
     url = data.get('url')
     format_type = data.get('format', 'mp3')
     quality = data.get('quality', '192' if format_type == 'mp3' else '1080')
+    custom_artist = data.get('artist')
 
     if not url:
         return jsonify({"error": "No URL provided"}), 400
@@ -437,7 +458,7 @@ def playlist_start():
     # Run the download in a background thread
     thread = threading.Thread(
         target=_run_playlist_download,
-        args=(job_id, entries, format_type, quality, job_dir),
+        args=(job_id, entries, format_type, quality, job_dir, custom_artist),
         daemon=True,
     )
     thread.start()
@@ -448,7 +469,7 @@ def playlist_start():
     })
 
 
-def _run_playlist_download(job_id, entries, format_type, quality, job_dir):
+def _run_playlist_download(job_id, entries, format_type, quality, job_dir, custom_artist=None):
     """Background thread: download each entry, then create ZIP."""
     job = playlist_jobs[job_id]
     ffmpeg_location = resolve_ffmpeg_location()
@@ -457,23 +478,46 @@ def _run_playlist_download(job_id, entries, format_type, quality, job_dir):
         try:
             job['current_title'] = entry['title']
 
-            safe_title = sanitize_title(entry['title'])
+            # 1. Extract metadata (no download) for tagging later
+            info_opts = {
+                'noplaylist': True,
+                'quiet': True,
+                'no_warnings': True,
+            }
+            with yt_dlp.YoutubeDL(info_opts) as ydl:
+                info = ydl.extract_info(entry['url'], download=False)
+
+            raw_title = info.get('title') or entry['title']
+            raw_artist = custom_artist or info.get('artist') or info.get('uploader') or ''
+            if raw_artist.endswith(' - Topic'):
+                raw_artist = raw_artist.replace(' - Topic', '')
+
+            safe_title = sanitize_title(raw_title)
             file_base = next_available_base(safe_title, directory=job_dir)
             output_tmpl = os.path.join(job_dir, f"{file_base}.%(ext)s")
 
+            # Snapshot directory before download
+            before = set(os.listdir(job_dir))
+
+            # 2. Download with full postprocessor pipeline
             ydl_opts = build_ydl_opts(format_type, quality, output_tmpl, ffmpeg_location, noplaylist=True)
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([entry['url']])
 
-            # MP3 artwork embedding
+            # 3. Find the new file(s) that appeared
+            after = set(os.listdir(job_dir))
+            new_files = after - before
+
+            # 4. Embed metadata (title, artist, artwork) via ffmpeg
+            meta_info = {'title': raw_title, 'artist': raw_artist}
+
             if format_type == 'mp3':
-                ext = 'mp3'
-                files = glob.glob(os.path.join(job_dir, f"{file_base}.{ext}"))
-                if files:
-                    # Build a minimal info dict for embed
-                    embed_info = {'title': entry['title'], 'artist': ''}
-                    embed_mp3_artwork(files[0], file_base, embed_info, ffmpeg_location, directory=job_dir)
+                mp3_files = [f for f in new_files if f.endswith('.mp3')]
+                if mp3_files:
+                    mp3_path = os.path.join(job_dir, mp3_files[0])
+                    mp3_base = os.path.splitext(mp3_files[0])[0]
+                    embed_mp3_artwork(mp3_path, mp3_base, meta_info, ffmpeg_location, directory=job_dir)
 
         except Exception as e:
             print(f"Playlist item {i+1} failed: {str(e)}")
