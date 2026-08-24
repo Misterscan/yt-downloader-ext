@@ -32,6 +32,62 @@ function sanitizeFilename(name) {
     .slice(0, 120) || "youtube_download";
 }
 
+async function getYouTubeCookieHeader() {
+  try {
+    const cookies = await chrome.cookies.getAll({ url: "https://www.youtube.com/" });
+    return cookies.map(({ name, value }) => `${name}=${value}`).join("; ");
+  } catch (err) {
+    console.warn("Could not read YouTube cookies", err);
+    return "";
+  }
+}
+
+async function fetchBackend(url, options = {}) {
+  const headers = new Headers(options.headers || {});
+  const cookieHeader = await getYouTubeCookieHeader();
+  if (cookieHeader) headers.set("X-YouTube-Cookies", cookieHeader);
+  return fetch(url, { ...options, headers });
+}
+
+async function downloadBackendFile(url, filename) {
+  const response = await fetchBackend(url);
+  const contentType = response.headers.get("content-type") || "";
+
+  if (!response.ok || contentType.includes("application/json")) {
+    let message = `Download failed (${response.status})`;
+    try {
+      const data = await response.json();
+      message = data.error || message;
+    } catch {
+      // Keep the status-based message when the backend did not return JSON.
+    }
+    throw new Error(message);
+  }
+
+  const file = await response.blob();
+  if (!file.size) {
+    throw new Error("The backend returned an empty download.");
+  }
+
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    return await new Promise((resolve, reject) => {
+      chrome.downloads.download(
+        { url: objectUrl, filename, conflictAction: "uniquify", saveAs: true },
+        (downloadId) => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+          } else {
+            resolve(downloadId);
+          }
+        }
+      );
+    });
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
 // ── Populate quality dropdown ──
 function populateQuality(format) {
   const sel = document.getElementById("qualitySelect");
@@ -95,7 +151,7 @@ async function fetchVideoInfo(url) {
   const dlBtn = document.getElementById("dlBtn");
 
   try {
-    const response = await fetch(
+    const response = await fetchBackend(
       `${BACKEND_URL}/info?url=${encodeURIComponent(url)}`
     );
     
@@ -224,28 +280,12 @@ document.getElementById("dlBtn").addEventListener("click", async () => {
   const outputName = `${sanitizeFilename(title)}.${ext}`;
 
   try {
-    chrome.downloads.download(
-      {
-        url: downloadUrl,
-        filename: outputName,
-        conflictAction: "uniquify",
-        saveAs: true,
-      },
-      (downloadId) => {
-        btnText.textContent = originalText;
-        loader.style.display = "none";
-        btn.disabled = false;
-
-        if (chrome.runtime.lastError) {
-          statusEl.textContent = `Error: ${chrome.runtime.lastError.message}`;
-        } else {
-          statusEl.textContent = "Download started!";
-        }
-      }
-    );
+    await downloadBackendFile(downloadUrl, outputName);
+    statusEl.textContent = "Download started!";
   } catch (err) {
     console.error(err);
-    alert("Make sure the helper is running on http://127.0.0.1:5001");
+    statusEl.textContent = `Error: ${err.message}`;
+  } finally {
     btnText.textContent = originalText;
     loader.style.display = "none";
     btn.disabled = false;
@@ -276,7 +316,7 @@ document.getElementById("playlistBtn").addEventListener("click", async () => {
 
   try {
     // 1. Start the playlist job
-    const startRes = await fetch(`${BACKEND_URL}/playlist/start`, {
+    const startRes = await fetchBackend(`${BACKEND_URL}/playlist/start`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -329,24 +369,14 @@ document.getElementById("playlistBtn").addEventListener("click", async () => {
     progressText.textContent = "Preparing ZIP...";
     statusEl.textContent = "Packaging ZIP file...";
 
-    chrome.downloads.download(
-      {
-        url: `${BACKEND_URL}/playlist/download/${jobId}`,
-        filename: `playlist_${currentFormat}.zip`,
-        conflictAction: "uniquify",
-        saveAs: true,
-      },
-      (downloadId) => {
-        if (chrome.runtime.lastError) {
-          statusEl.textContent = `Error: ${chrome.runtime.lastError.message}`;
-        } else {
-          statusEl.textContent = "Playlist ZIP download started!";
-          progressText.textContent = "Done!";
-        }
-        plBtnText.textContent = originalText;
-        plBtn.disabled = false;
-      }
+    await downloadBackendFile(
+      `${BACKEND_URL}/playlist/download/${jobId}`,
+      `playlist_${currentFormat}.zip`
     );
+    statusEl.textContent = "Playlist ZIP download started!";
+    progressText.textContent = "Done!";
+    plBtnText.textContent = originalText;
+    plBtn.disabled = false;
   } catch (err) {
     console.error(err);
     statusEl.textContent = `Error: ${err.message}`;

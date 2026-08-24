@@ -51,6 +51,26 @@ def next_available_base(base_name, directory=None):
     return candidate
 
 
+def get_request_cookie_header():
+    """Return YouTube cookies supplied by the local Chrome extension only."""
+    cookie_header = request.headers.get('X-YouTube-Cookies', '')
+    # Browser cookie headers should be small. Ignore malformed/oversized input.
+    if not cookie_header or len(cookie_header) > 16384:
+        return None
+    return cookie_header
+
+
+def get_base_opts(cookie_header=None):
+    opts = {
+        'quiet': True,
+        'no_warnings': True,
+        'js_runtimes': {'node': {}},
+    }
+    if cookie_header:
+        opts['http_headers'] = {'Cookie': cookie_header}
+    return opts
+
+
 def resolve_ffmpeg_location():
     # launchd often has a minimal PATH; provide Homebrew fallback.
     env_loc = os.getenv('FFMPEG_LOCATION')
@@ -69,7 +89,7 @@ def resolve_ffmpeg_location():
     return None
 
 
-def build_ydl_opts(format_type, quality, output_tmpl, ffmpeg_location, noplaylist=True):
+def build_ydl_opts(format_type, quality, output_tmpl, ffmpeg_location, noplaylist=True, cookie_header=None):
     """Build yt-dlp option dict based on format and quality."""
     if format_type == 'mp3':
         fmt = 'bestaudio/best'
@@ -77,14 +97,13 @@ def build_ydl_opts(format_type, quality, output_tmpl, ffmpeg_location, noplaylis
         # MP4: pick best mp4 video up to the requested height + m4a audio
         fmt = f'bestvideo[ext=mp4][height<={quality}]+bestaudio[ext=m4a]/best[ext=mp4][height<={quality}]/best[ext=mp4]/best'
 
-    ydl_opts = {
+    ydl_opts = get_base_opts(cookie_header)
+    ydl_opts.update({
         'format': fmt,
         'outtmpl': output_tmpl,
         'noplaylist': noplaylist,
-        'quiet': True,
-        'no_warnings': True,
         'writethumbnail': format_type == 'mp3',  # Thumbnails only for MP3 embedding
-    }
+    })
 
     if format_type == 'mp4':
         ydl_opts['merge_output_format'] = 'mp4'
@@ -215,14 +234,14 @@ def get_info():
     duration = None
     playlist_count = 0
     is_playlist_page = '/playlist' in url and 'watch' not in url
+    cookie_header = get_request_cookie_header()
 
     # ── Step 1: Get single-video info (always reliable) ──
     if not is_playlist_page:
-        video_opts = {
-            'quiet': True,
-            'no_warnings': True,
+        video_opts = get_base_opts(cookie_header)
+        video_opts.update({
             'noplaylist': True,
-        }
+        })
         try:
             with yt_dlp.YoutubeDL(video_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
@@ -237,12 +256,11 @@ def get_info():
 
     # ── Step 2: Attempt playlist count (separate try — may fail on private) ──
     if 'list=' in url:
-        playlist_opts = {
-            'quiet': True,
-            'no_warnings': True,
+        playlist_opts = get_base_opts(cookie_header)
+        playlist_opts.update({
             'extract_flat': True,
             'noplaylist': False,
-        }
+        })
         try:
             with yt_dlp.YoutubeDL(playlist_opts) as ydl:
                 pl_info = ydl.extract_info(url, download=False)
@@ -302,12 +320,13 @@ def download():
     if not url:
         return jsonify({"error": "No URL provided"}), 400
 
+    cookie_header = get_request_cookie_header()
+
     # Extract info for default title if not provided
-    info_opts = {
+    info_opts = get_base_opts(cookie_header)
+    info_opts.update({
         'noplaylist': True,
-        'quiet': True,
-        'no_warnings': True,
-    }
+    })
 
     try:
         with yt_dlp.YoutubeDL(info_opts) as ydl:
@@ -322,7 +341,10 @@ def download():
 
     ffmpeg_location = resolve_ffmpeg_location()
 
-    ydl_opts = build_ydl_opts(format_type, quality, output_tmpl, ffmpeg_location, noplaylist=True)
+    ydl_opts = build_ydl_opts(
+        format_type, quality, output_tmpl, ffmpeg_location,
+        noplaylist=True, cookie_header=cookie_header,
+    )
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -400,17 +422,17 @@ def playlist_start():
     format_type = data.get('format', 'mp3')
     quality = data.get('quality', '192' if format_type == 'mp3' else '1080')
     custom_artist = data.get('artist')
+    cookie_header = get_request_cookie_header()
 
     if not url:
         return jsonify({"error": "No URL provided"}), 400
 
     # Extract playlist entries
-    info_opts = {
-        'quiet': True,
-        'no_warnings': True,
+    info_opts = get_base_opts(cookie_header)
+    info_opts.update({
         'extract_flat': True,
         'noplaylist': False,
-    }
+    })
 
     try:
         with yt_dlp.YoutubeDL(info_opts) as ydl:
@@ -458,7 +480,7 @@ def playlist_start():
     # Run the download in a background thread
     thread = threading.Thread(
         target=_run_playlist_download,
-        args=(job_id, entries, format_type, quality, job_dir, custom_artist),
+        args=(job_id, entries, format_type, quality, job_dir, custom_artist, cookie_header),
         daemon=True,
     )
     thread.start()
@@ -469,7 +491,7 @@ def playlist_start():
     })
 
 
-def _run_playlist_download(job_id, entries, format_type, quality, job_dir, custom_artist=None):
+def _run_playlist_download(job_id, entries, format_type, quality, job_dir, custom_artist=None, cookie_header=None):
     """Background thread: download each entry, then create ZIP."""
     job = playlist_jobs[job_id]
     ffmpeg_location = resolve_ffmpeg_location()
@@ -479,11 +501,10 @@ def _run_playlist_download(job_id, entries, format_type, quality, job_dir, custo
             job['current_title'] = entry['title']
 
             # 1. Extract metadata (no download) for tagging later
-            info_opts = {
+            info_opts = get_base_opts(cookie_header)
+            info_opts.update({
                 'noplaylist': True,
-                'quiet': True,
-                'no_warnings': True,
-            }
+            })
             with yt_dlp.YoutubeDL(info_opts) as ydl:
                 info = ydl.extract_info(entry['url'], download=False)
 
@@ -500,7 +521,10 @@ def _run_playlist_download(job_id, entries, format_type, quality, job_dir, custo
             before = set(os.listdir(job_dir))
 
             # 2. Download with full postprocessor pipeline
-            ydl_opts = build_ydl_opts(format_type, quality, output_tmpl, ffmpeg_location, noplaylist=True)
+            ydl_opts = build_ydl_opts(
+                format_type, quality, output_tmpl, ffmpeg_location,
+                noplaylist=True, cookie_header=cookie_header,
+            )
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([entry['url']])

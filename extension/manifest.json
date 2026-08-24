@@ -7,14 +7,16 @@
         "48": "extension_icon48.png",
         "128": "extension_icon128.png"
     },
-    "version": "3.0",
+    "version": "3.5",
     "permissions": [
         "activeTab",
-        "downloads"
+        "downloads",
+        "cookies"
     ],
     "host_permissions": [
         "http://localhost:5001/*",
-        "http://127.0.0.1:5001/*"
+        "http://127.0.0.1:5001/*",
+        "https://*.youtube.com/*"
     ],
     "action": {
         "default_popup": "popup.html"
